@@ -1,0 +1,5 @@
+# Normalise line endings so Windows and Linux checkouts produce identical files.
+* text=auto eol=lf
+
+# Generated lock file: collapse it in GitHub diffs.
+uv.lock linguist-generated=true
