@@ -108,6 +108,32 @@ def test_empty_target_is_rejected() -> None:
         _fault(FaultKind.CRASH, "")
 
 
+def test_unknown_kind_is_rejected() -> None:
+    with pytest.raises(ValueError, match="bogus"):
+        Fault("bogus", "ott-1", 0, None, 1.0)  # type: ignore[arg-type]
+
+
+def test_kind_given_as_string_becomes_the_enum() -> None:
+    fault = Fault("crash", "ott-1", 0, None, 1.0)  # type: ignore[arg-type]
+    assert fault.kind is FaultKind.CRASH
+
+
+# --------------------------------------------------------------- FaultEffects
+
+
+def test_fault_effects_mappings_are_read_only() -> None:
+    effects = _effects(_fault(FaultKind.PATH_LOSS, SITE_A, severity=0.5))
+    with pytest.raises(TypeError):
+        effects.site_path_loss[SITE_A] = 0.0  # type: ignore[index]
+
+
+def test_fault_effects_copies_the_mappings_it_is_given() -> None:
+    loss = {SITE_A: 0.5}
+    effects = FaultEffects(site_path_loss=loss)
+    loss[SITE_A] = 0.9
+    assert effects.site_path_loss[SITE_A] == 0.5
+
+
 # -------------------------------------------------------------- validate_fault
 
 

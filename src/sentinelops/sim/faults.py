@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 
 from sentinelops.sim.topology import RegionId, ServerId, SiteId, Topology
 
@@ -94,7 +95,13 @@ class Fault:
     severity: float
 
     def __post_init__(self) -> None:
-        """Reject an empty target, a negative onset, a bad duration or severity."""
+        """Reject an unknown kind, an empty target, a negative onset, a bad duration or severity.
+
+        A valid kind given as a plain string (e.g. ``"crash"``) is converted to its
+        :class:`FaultKind`, so a misspelled kind fails here instead of being
+        silently treated as some other kind later.
+        """
+        object.__setattr__(self, "kind", FaultKind(self.kind))
         if not self.target:
             raise ValueError(f"{self.kind} fault needs a non-empty target")
         if self.onset < 0:
@@ -121,6 +128,8 @@ class FaultEffects:
 
     The defaults mean "no effect", so ``FaultEffects()`` describes a healthy
     network. A key missing from a mapping also means no effect for that item.
+    The mappings are stored as read-only copies, so neither the caller nor the
+    receiver can change them afterwards.
 
     Attributes:
         server_down: Servers that serve nothing this tick.
@@ -140,6 +149,20 @@ class FaultEffects:
     site_path_loss: Mapping[SiteId, float] = field(default_factory=dict)
     region_extra_legit_qps: Mapping[RegionId, float] = field(default_factory=dict)
     region_extra_attack_qps: Mapping[RegionId, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Store read-only copies of the mappings."""
+        for name in _EFFECT_MAPPINGS:
+            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
+
+
+_EFFECT_MAPPINGS = (
+    "server_capacity_factor",
+    "server_memory_pressure",
+    "site_path_loss",
+    "region_extra_legit_qps",
+    "region_extra_attack_qps",
+)
 
 
 class ClearingAction(StrEnum):
