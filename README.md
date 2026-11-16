@@ -53,6 +53,18 @@ uv sync
 uv run sentinelops --help
 ```
 
+Run an agent on seeded scenarios and see the share of legitimate queries that
+failed (each seed fixes the fault, the demand and the monitoring noise):
+
+```bash
+uv run sentinelops run --family crash --agent noop --seeds 0-4
+uv run sentinelops run --family crash --agent rules --seeds 0-4
+```
+
+Families: `crash`, `exhaustion`, `hardware`, `path_loss`, `site_outage`,
+`flood`, `benign_surge`, `mixed`. Add `--events DIR` to save each run's event
+log as JSON Lines.
+
 ## Development
 
 ```bash

@@ -10,7 +10,7 @@ Task IDs are prefixed by owner: **M** = Mohamed Azab, **Y** = Yassin Koubeisy.
 
 | Milestone | Window | Status |
 |---|---|---|
-| [M1 — Simulator and baseline](#m1--simulator-and-baseline) | Nov 9 – Nov 15 | 🟡 In progress (6/8) |
+| [M1 — Simulator and baseline](#m1--simulator-and-baseline) | Nov 9 – Nov 15 | 🟡 In progress (7/8) |
 | [M2 — Learned models](#m2--learned-models) | Nov 16 – Nov 22 | ⚪ Planned |
 | [M3 — Decision-making agent](#m3--decision-making-agent) | Nov 23 – Nov 29 | ⚪ Planned |
 | [M4 — Evaluation and demo features](#m4--evaluation-and-demo-features) | Nov 30 – Dec 4 | ⚪ Planned |
@@ -33,7 +33,7 @@ legitimate queries, with identical results for identical seeds.
 - [x] ~~Y1.2 Fault model for servers, network paths and traffic ([#4](https://github.com/mohazab2006/SentinelOps/issues/4))~~ — Yassin · Nov 12
 - [x] ~~M1.3 Simulation engine with bounded queues and failure accounting ([#5](https://github.com/mohazab2006/SentinelOps/issues/5))~~ — Mohamed · Nov 15
 - [x] ~~Y1.3 Seeded scenario families ([#6](https://github.com/mohazab2006/SentinelOps/issues/6))~~ — Yassin · Nov 14
-- [ ] M1.4 Run harness and legitimate-query failure metric ([#7](https://github.com/mohazab2006/SentinelOps/issues/7)) — Mohamed
+- [x] ~~M1.4 Run harness and legitimate-query failure metric ([#7](https://github.com/mohazab2006/SentinelOps/issues/7))~~ — Mohamed · Nov 16
 - [ ] Y1.4 Threshold-rule baseline agent with runbooks ([#8](https://github.com/mohazab2006/SentinelOps/issues/8)) — Yassin
 
 ## M2 — Learned models
@@ -97,7 +97,7 @@ Changes to the plan above are recorded here with the reason.
 
 | Date | Change | Reason |
 |---|---|---|
-| — | — | — |
+| Nov 16 | M1 closes on Nov 16 instead of Nov 15; M1.4 and Y1.4 move to Nov 16 | M1.3 was split into three commits (types, site queue, engine) to keep each change reviewable; Y1.4 needs the engine from the last of them |
 
 ## Backlog
 
