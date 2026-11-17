@@ -10,6 +10,8 @@ Runbook, in priority order, per site (first match wins each tick):
 1. A server is silent (serves nothing while the site has traffic) -> restart
    it; after ``max_restarts`` restarts, withdraw the site and request a repair.
 2. Too much packet loss -> withdraw the site (never the last announced one).
+   If (nearly) everything is lost, the site is down rather than lossy, so
+   also request a repair of the whole site; otherwise it would stay broken.
 3. Traffic far above normal and replies failing -> rate limit the site.
 4. Replies failing and a server's memory above ``mem_high`` -> restart the
    server using most memory (the memory-leak runbook). Failures without high
@@ -39,6 +41,9 @@ SILENT_SERVED_QPS = 1.0
 
 SILENT_MIN_TRAFFIC = 0.2
 """...but only while its site receives more than this fraction of its normal traffic."""
+
+SITE_DOWN_LOSS = 0.95
+"""A site losing at least this fraction of its queries is down, not just lossy."""
 
 RATE_LIMIT_HEADROOM = 1.2
 """A rate limit lets through this multiple of the site's normal traffic."""
@@ -196,7 +201,9 @@ class RuleBasedAgent:
         overloaded = None
         if telemetry.qps is not None:
             overloaded = normal > 0 and telemetry.qps > th.qps_factor * normal and failing
+        down = None if telemetry.loss is None else telemetry.loss >= SITE_DOWN_LOSS
         loss_count = self._sustain(site, "loss", lossy)
+        down_count = self._sustain(site, "down", down)
         overload_count = self._sustain(site, "overload", overloaded)
         fail_count = self._sustain(site, "fail", failing)
 
@@ -214,10 +221,19 @@ class RuleBasedAgent:
                 step.insert(0, Action(ActionKind.WITHDRAW, site))
             return step
 
-        # 2. Path loss.
-        if loss_count >= th.sustain_ticks and self._can_withdraw(site, telemetry, announced):
-            self._counters[(site, "loss")] = 0
-            return [Action(ActionKind.WITHDRAW, site)]
+        # 2. Path loss; a site that loses everything is down and needs a repair.
+        if loss_count >= th.sustain_ticks:
+            can_withdraw = self._can_withdraw(site, telemetry, announced)
+            idle = not (self._busy(site) or any(self._busy(s) for s in servers))
+            if down_count >= th.sustain_ticks and idle:
+                self._counters[(site, "loss")] = self._counters[(site, "down")] = 0
+                step = [Action(ActionKind.REQUEST_REPAIR, site)]
+                if can_withdraw:
+                    step.insert(0, Action(ActionKind.WITHDRAW, site))
+                return step
+            if can_withdraw:
+                self._counters[(site, "loss")] = 0
+                return [Action(ActionKind.WITHDRAW, site)]
 
         # 3. Overload.
         if (

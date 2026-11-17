@@ -187,6 +187,63 @@ def test_last_announced_site_is_never_withdrawn() -> None:
     assert all(a.kind != ActionKind.WITHDRAW for a in flat(log))
 
 
+def site_down(net: FakeNet) -> None:
+    net.site[LON] = {"qps": 0.0, "loss": 1.0, "ok_replies": 0.0, "failed_replies": NORMAL_QPS}
+
+
+def test_site_that_loses_everything_is_withdrawn_and_repaired() -> None:
+    log = run(RuleBasedAgent(), FakeNet(), 200, after_warmup(site_down))
+    assert log == {
+        120 + SUSTAIN - 1: [
+            Action(ActionKind.WITHDRAW, LON),
+            Action(ActionKind.REQUEST_REPAIR, LON),
+        ]
+    }
+
+
+def test_repaired_site_is_restored_only_after_the_repair_finishes() -> None:
+    fired = 120 + SUSTAIN - 1
+    repair_done = fired + 1 + 500  # FakeNet repairs take 500 ticks
+
+    def outage_until_repaired(tick: int, net: FakeNet) -> None:
+        if tick == 120:
+            site_down(net)
+        elif tick == repair_done:
+            net.site.pop(LON)
+
+    log = run(RuleBasedAgent(), FakeNet(), 1000, outage_until_repaired)
+    (restored_at,) = (t for t, acts in log.items() if acts[0].kind == ActionKind.RESTORE)
+    assert restored_at == repair_done
+    assert sorted(log) == [fired, restored_at]
+
+
+def test_last_site_down_is_repaired_once_without_withdrawing() -> None:
+    net = FakeNet(announced={s: s == LON for s in TOPO.sites})
+    actions = flat(run(RuleBasedAgent(), net, 450, after_warmup(site_down)))
+    at_lon = [a for a in actions if a.target == LON]
+    assert at_lon == [Action(ActionKind.REQUEST_REPAIR, LON)]  # no repeat while it runs
+
+
+def test_heavy_but_partial_loss_is_not_a_site_repair() -> None:
+    lossy = {"loss": 0.9}
+    log = run(RuleBasedAgent(), FakeNet(), 200, after_warmup(lambda n: n.site.update({LON: lossy})))
+    assert flat(log) == [Action(ActionKind.WITHDRAW, LON)]
+
+
+def test_site_outage_run_ends_with_the_site_repaired() -> None:
+    # Regression: the site used to be withdrawn and restored over and over, never repaired.
+    scenario = generate("site_outage", 0, TOPO)
+    env = simulate(scenario, RuleBasedAgent(), TOPO)
+    repairs = [
+        event.data["target"]
+        for event in env.events.named("action")
+        if event.data["kind"] == ActionKind.REQUEST_REPAIR
+        and event.data["status"] == ActionStatus.SUCCEEDED
+    ]
+    assert repairs == [scenario.faults[0].target]
+    assert env.truth.cleared == {0}
+
+
 def test_overload_with_failures_is_rate_limited_at_normal_plus_headroom() -> None:
     overload = {"qps": 3 * NORMAL_QPS, "ok_replies": 2000.0, "failed_replies": 1000.0}
     log = run(
