@@ -390,8 +390,10 @@ class DnsEnv:
 
     def _clear_faults(self, tick: int, how: ClearingAction, targets: Sequence[str]) -> None:
         for index, fault in enumerate(self.faults):
-            if index in self.truth.cleared or not fault.active_at(tick):
-                continue  # only a fault that is happening now can be fixed
+            if index in self.truth.cleared or not fault.active_at(tick) or fault.onset >= tick:
+                # Only a fault that is already happening can be fixed. Actions finish
+                # before faults take effect, so one starting this very tick is not yet.
+                continue
             if any(clears(fault, how, target, self.topology) for target in targets):
                 self.truth.cleared.add(index)
                 self._active_faults.discard(index)

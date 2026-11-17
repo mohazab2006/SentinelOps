@@ -379,6 +379,19 @@ def test_restart_before_onset_does_not_prevent_a_later_crash() -> None:
     assert [e.name for e in env.events if e.name.startswith("fault")] == ["fault_started"]
 
 
+def test_restart_finishing_as_a_crash_begins_does_not_prevent_it() -> None:
+    # Regression: a restart ending on the crash's onset tick used to clear a fault
+    # that had never taken effect (fault_cleared with no fault_started).
+    restart = _at(5, Action(ActionKind.RESTART, "ott-1"))
+    _, observations = _run(plan=restart, horizon=200)
+    finished = _statuses(observations)[-1][0]  # restart durations ignore faults
+    crash = [Fault(FaultKind.CRASH, "ott-1", finished, None, 1.0)]
+    env, observations = _run(crash, restart, horizon=200)
+    assert env.truth.cleared == set()
+    assert [e.name for e in env.events if e.name.startswith("fault")] == ["fault_started"]
+    assert _statuses(observations)[-1] == (finished, "ott-1", ActionStatus.FAILED)
+
+
 def test_benign_surge_is_legitimate_and_rate_limiting_it_hurts_users() -> None:
     surge = [Fault(FaultKind.BENIGN_SURGE, "eu-central", 50, 100, 0.5)]
     healthy, _ = _run(horizon=200)
