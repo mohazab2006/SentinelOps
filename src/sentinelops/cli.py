@@ -124,10 +124,12 @@ def _run(args: argparse.Namespace) -> int:
         make_agent(args.agent)  # fail fast, before any simulation, if it is unavailable
         topology = default_topology()
         scenarios = [generate(args.family, seed, topology, args.horizon) for seed in args.seeds]
+        if args.events is not None:
+            args.events.mkdir(parents=True, exist_ok=True)
     except ValueError as error:
         parser.error(str(error))
-    if args.events is not None:
-        args.events.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        parser.error(f"cannot write event logs to {args.events}: {error.strerror}")
 
     fault_width = max(len("faults"), *(len(_describe(s)) for s in scenarios))
     print(f"family={args.family} agent={args.agent} horizon={args.horizon} ticks")

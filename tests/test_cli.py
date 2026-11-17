@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
 from sentinelops import cli
+from sentinelops.eval import harness
 
-RULES_INSTALLED = importlib.util.find_spec("sentinelops.baselines.rules_agent") is not None
 SHORT = ["--horizon", "1601"]  # the shortest horizon every scenario family accepts
 
 
@@ -82,11 +82,25 @@ def test_run_rejects_bad_arguments(
     assert message in capsys.readouterr().err
 
 
-@pytest.mark.skipif(RULES_INSTALLED, reason="only meaningful before the baseline exists")
 def test_unavailable_agent_is_a_clear_error(
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    ghost = MappingProxyType({**harness.AGENTS, "rules": "sentinelops.ghost:Ghost"})
+    monkeypatch.setattr(harness, "AGENTS", ghost)
     with pytest.raises(SystemExit) as exit_info:
         cli.main(["run", "--family", "crash", "--agent", "rules"])
     assert exit_info.value.code == 2
     assert "agent 'rules' is not available" in capsys.readouterr().err
+
+
+def test_unusable_events_path_is_a_clear_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    taken = tmp_path / "events"
+    taken.write_text("not a directory")
+    argv = ["run", "--family", "crash", "--agent", "noop", *SHORT, "--events", str(taken)]
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(argv)
+    assert exit_info.value.code == 2
+    assert "cannot write event logs to" in capsys.readouterr().err
+    assert taken.read_text() == "not a directory"  # nothing was simulated or overwritten
