@@ -11,7 +11,10 @@ Runbook, in priority order, per site (first match wins each tick):
    it; after ``max_restarts`` restarts, withdraw the site and request a repair.
 2. Too much packet loss -> withdraw the site (never the last announced one).
 3. Traffic far above normal and replies failing -> rate limit the site.
-4. Replies failing for another reason -> restart the server using most memory.
+4. Replies failing and a server's memory above ``mem_high`` -> restart the
+   server using most memory (the memory-leak runbook). Failures without high
+   memory, such as a neighbour absorbing a withdrawn site's traffic, are left
+   alone: restarting a healthy server only takes capacity away.
 5. Housekeeping: restore a withdrawn site, or clear a rate limit, once
    ``restore_after_ticks`` have passed.
 
@@ -61,6 +64,9 @@ class RuleThresholds:
             rate limit cleared.
         max_restarts: Restarts per server before the agent gives up on
             restarting and asks for a repair.
+        mem_high: A failing site's server is restarted only if its memory
+            use exceeds this fraction. Healthy servers stay below about 0.45,
+            even when fully loaded.
     """
 
     fail_ratio: float = 0.05
@@ -69,11 +75,12 @@ class RuleThresholds:
     sustain_ticks: int = 15
     restore_after_ticks: int = 300
     max_restarts: int = 2
+    mem_high: float = 0.5
 
     def __post_init__(self) -> None:
         """Reject thresholds that would make the rules meaningless."""
-        if not (0.0 <= self.fail_ratio < 1.0 and 0.0 <= self.loss < 1.0):
-            raise ValueError("fail_ratio and loss must be in [0, 1)")
+        if not all(0.0 <= v < 1.0 for v in (self.fail_ratio, self.loss, self.mem_high)):
+            raise ValueError("fail_ratio, loss and mem_high must be in [0, 1)")
         if self.qps_factor <= 1.0:
             raise ValueError("qps_factor must be greater than 1")
         if self.sustain_ticks < 1 or self.restore_after_ticks < 1 or self.max_restarts < 0:
@@ -221,8 +228,8 @@ class RuleBasedAgent:
             self._counters[(site, "overload")] = 0
             return [Action(ActionKind.RATE_LIMIT, site, limit_qps=RATE_LIMIT_HEADROOM * normal)]
 
-        # 4. Failing for another reason: restart the server using most memory, but
-        #    never while another operation is running at the site.
+        # 4. Failing with a server short of memory: restart the server using most
+        #    memory, but never while another operation is running at the site.
         site_busy = self._busy(site) or any(self._busy(s) for s in servers)
         if fail_count >= th.sustain_ticks and not site_busy:
             candidates = [
@@ -230,6 +237,7 @@ class RuleBasedAgent:
                 for server in servers
                 if (reading := obs.servers.get(server)) is not None
                 and (mem := reading.mem) is not None
+                and mem > th.mem_high
             ]
             if candidates:
                 self._counters[(site, "fail")] = 0

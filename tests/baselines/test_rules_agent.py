@@ -10,7 +10,8 @@ import pytest
 from sentinelops.agent.base import Agent, NoOpAgent
 from sentinelops.baselines import RuleBasedAgent, RuleThresholds
 from sentinelops.baselines.rules_agent import fail_ratio
-from sentinelops.eval.harness import make_agent
+from sentinelops.eval.harness import make_agent, simulate
+from sentinelops.scenarios import generate
 from sentinelops.sim.actions import Action, ActionKind, ActionStatus, ActionUpdate
 from sentinelops.sim.env import DnsEnv
 from sentinelops.sim.faults import Fault, FaultKind
@@ -297,6 +298,42 @@ def test_no_memory_readings_means_no_memory_restart() -> None:
     assert run(RuleBasedAgent(), FakeNet(), 200, after_warmup(failing)) == {}
 
 
+def test_failing_site_with_normal_memory_is_not_restarted() -> None:
+    # e.g. a neighbour absorbing a withdrawn site's traffic: restarting a healthy
+    # server there would only take more capacity away.
+    def overloaded(net: FakeNet) -> None:
+        net.site[LON] = {"qps": 1.8 * NORMAL_QPS, "ok_replies": 1500.0, "failed_replies": 300.0}
+        net.server[LON1] = {"mem": 0.42}
+        net.server[LON2] = {"mem": 0.44}
+
+    assert run(RuleBasedAgent(), FakeNet(), 400, after_warmup(overloaded)) == {}
+
+
+def test_memory_threshold_is_tunable() -> None:
+    def failing(net: FakeNet) -> None:
+        net.site[LON] = {"ok_replies": 900.0, "failed_replies": 100.0}
+        net.server[LON1] = {"mem": 0.42}
+        net.server[LON2] = {"mem": 0.35}
+
+    agent = RuleBasedAgent(RuleThresholds(mem_high=0.4))
+    log = run(agent, FakeNet(restart_status=ActionStatus.SUCCEEDED), 200, after_warmup(failing))
+    assert log[min(log)] == [Action(ActionKind.RESTART, LON1)]
+
+
+def test_hardware_fault_never_triggers_restarts_at_healthy_sites() -> None:
+    # Regression: after withdrawing the broken site, its neighbour is overloaded
+    # and used to have its healthy servers restarted one after another.
+    scenario = generate("hardware", 0, TOPO)
+    (fault,) = scenario.faults
+    env = simulate(scenario, RuleBasedAgent(), TOPO)
+    restarted = {
+        event.data["target"]
+        for event in env.events.named("action")
+        if event.data["kind"] == ActionKind.RESTART
+    }
+    assert restarted == {fault.target}
+
+
 def test_last_site_with_exhausted_restarts_still_gets_a_repair() -> None:
     net = FakeNet(announced={s: s == LON for s in TOPO.sites})
     log = run(RuleBasedAgent(), net, 260, after_warmup(lon1_silent))
@@ -390,6 +427,8 @@ def test_act_before_reset_is_an_error() -> None:
         {"sustain_ticks": 0},
         {"restore_after_ticks": 0},
         {"max_restarts": -1},
+        {"mem_high": 1.0},
+        {"mem_high": -0.1},
     ],
 )
 def test_nonsense_thresholds_are_rejected(kwargs: dict[str, float]) -> None:
