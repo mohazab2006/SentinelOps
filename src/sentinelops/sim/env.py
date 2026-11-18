@@ -3,19 +3,21 @@
 :class:`DnsEnv` combines the topology, a list of injected faults and a seed into
 a reproducible run. Each tick it:
 
-1. finishes actions whose time is up and starts newly requested ones;
+1. finishes actions whose time is up and starts newly requested actions and
+   probes;
 2. works out the combined effect of all active faults;
 3. draws the tick's demand, adds flood and surge traffic, and routes it to the
    announcing sites;
 4. runs every site's query pipeline (loss, rate limit, queue, serve, timeout);
-5. records the ground truth and an event log; and
+5. records the ground truth and an event log, and reports probes whose
+   time is up; and
 6. returns a noisy :class:`~sentinelops.sim.telemetry.Observation` to the agent.
 
 The environment takes a list of faults rather than a scenario, so the
 simulator does not depend on how scenarios are generated.
 
 Randomness is split into independent streams (demand, telemetry noise, action
-durations) derived from the seed. Demand and noise never depend on what the
+durations, probe noise) derived from the seed. Demand and noise never depend on what the
 agent does, so two agents run on the same seed face exactly the same incident.
 """
 
@@ -47,6 +49,16 @@ from sentinelops.sim.faults import (
     clears,
     compute_effects,
     validate_fault,
+)
+from sentinelops.sim.probes import (
+    PROBE_TICKS,
+    ProbeKind,
+    ProbeRequest,
+    ProbeResult,
+    ServerState,
+    SiteState,
+    probe_outcome,
+    validate_probe,
 )
 from sentinelops.sim.site import SiteQueue, SiteTick, Traffic, process_tick
 from sentinelops.sim.telemetry import (
@@ -137,6 +149,14 @@ class _Running:
     action_id: int
     action: Action
     end_tick: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingProbe:
+    probe_id: int
+    request: ProbeRequest
+    issued: int
+    due: int
 
 
 def weighted_quantile(values: Sequence[float], weights: Sequence[float], q: float) -> float:
@@ -249,23 +269,41 @@ class DnsEnv:
         self.events.append(0, "run_started", horizon=self.horizon, seed=self.seed)
         return self._advance(())
 
-    def step(self, actions: Sequence[Action]) -> Observation:
-        """Apply ``actions`` and simulate the next tick.
+    def step(self, actions: Sequence[Action | ProbeRequest]) -> Observation:
+        """Apply ``actions``, start any probes among them and simulate the next tick.
+
+        A probe's result arrives in the observation of the tick it finishes, after
+        ``PROBE_TICKS[kind]`` ticks, and describes the network at that tick.
+
+        Every request is checked before any takes effect, so a bad one leaves the
+        run exactly as it was.
 
         Raises:
             RuntimeError: If called before :meth:`reset` or after the run is done.
-            ValueError: If an action's target does not fit the topology.
+            TypeError: If a request is neither an Action nor a ProbeRequest.
+            ValueError: If an action's or probe's target does not fit the topology.
         """
         if not self._started:
             raise RuntimeError("call reset() before step()")
         if self.done:
             raise RuntimeError("the run is finished; call reset() to start again")
-        return self._advance(tuple(actions))
+        requests = tuple(actions)
+        for request in requests:
+            if isinstance(request, ProbeRequest):
+                validate_probe(request, self.topology)
+            elif isinstance(request, Action):
+                validate_action(request, self.topology)
+            else:
+                raise TypeError(f"expected an Action or ProbeRequest, got {request!r}")
+        return self._advance(requests)
 
     # ------------------------------------------------------------------ internals
 
     def _init_state(self) -> None:
-        demand_seq, noise_seq, action_seq = np.random.SeedSequence(self.seed).spawn(3)
+        # Spawned children depend only on their index, so adding a stream at the
+        # end leaves the earlier ones (and every existing run) unchanged.
+        streams = np.random.SeedSequence(self.seed).spawn(4)
+        demand_seq, noise_seq, action_seq, probe_seq = streams
         self._demand: DemandTrace = generate_demand(
             self.topology,
             self.horizon,
@@ -275,6 +313,7 @@ class DnsEnv:
         )
         self._noise_rng = np.random.default_rng(noise_seq)
         self._action_rng = np.random.default_rng(action_seq)
+        self._probe_rng = np.random.default_rng(probe_seq)
         self._tick = -1
         self._queues = {
             sid: SiteQueue(site.queue_limit, site.timeout_ticks)
@@ -285,23 +324,29 @@ class DnsEnv:
         self._running: dict[int, _Running] = {}
         self._busy_servers: dict[ServerId, int] = {}
         self._next_action_id = 0
+        self._pending_probes: list[_PendingProbe] = []
+        self._next_probe_id = 0
         self._active_faults: set[int] = set()
         self.events = EventLog()
         self.truth = RunTruth(self.faults, self.horizon)
 
-    def _advance(self, actions: tuple[Action, ...]) -> Observation:
+    def _advance(self, requests: tuple[Action | ProbeRequest, ...]) -> Observation:
         self._tick += 1
         tick = self._tick
         updates: list[ActionUpdate] = []
         self._finish_actions(tick, updates)
-        for action in actions:
-            self._start_action(tick, action, updates)
+        for request in requests:
+            if isinstance(request, ProbeRequest):
+                self._start_probe(tick, request)
+            else:
+                self._start_action(tick, request, updates)
         effects = compute_effects(self.faults, tick, self.topology, self.truth.cleared)
         self._log_fault_transitions(tick)
         capacity = {s: self._server_capacity(s, effects) for s in self._servers}
         results, unrouted, mix = self._route_and_serve(tick, effects, capacity)
         self._record_truth(tick, results, unrouted)
-        return self._observe(tick, effects, capacity, results, mix, tuple(updates))
+        probes = self._finish_probes(tick, effects, capacity, results)
+        return self._observe(tick, effects, capacity, results, mix, tuple(updates), probes)
 
     # .................................................................. actions
 
@@ -327,7 +372,6 @@ class DnsEnv:
         )
 
     def _start_action(self, tick: int, action: Action, updates: list[ActionUpdate]) -> None:
-        validate_action(action, self.topology)
         action_id = self._next_action_id
         self._next_action_id += 1
         servers = action_targets(action, self.topology)
@@ -421,6 +465,111 @@ class DnsEnv:
             self.events.append(tick, "fault_ended", fault=index, kind=str(self.faults[index].kind))
         self._active_faults = active
 
+    # .................................................................. probes
+
+    def _start_probe(self, tick: int, request: ProbeRequest) -> None:
+        probe_id = self._next_probe_id
+        self._next_probe_id += 1
+        due = tick + PROBE_TICKS[request.kind]
+        self._pending_probes.append(_PendingProbe(probe_id, request, tick, due))
+        self.events.append(
+            tick, "probe_started", probe_id=probe_id, kind=str(request.kind), target=request.target
+        )
+
+    def _finish_probes(
+        self,
+        tick: int,
+        effects: FaultEffects,
+        capacity: Mapping[ServerId, float],
+        results: Mapping[SiteId, SiteTick],
+    ) -> tuple[ProbeResult, ...]:
+        due = [p for p in self._pending_probes if p.due <= tick]
+        if not due:
+            return ()
+        self._pending_probes = [p for p in self._pending_probes if p.due > tick]
+        surge: Mapping[SiteId, float] = {}
+        if any(p.request.kind == ProbeKind.TRAFFIC_SAMPLE for p in due):
+            surge = route(self.topology, effects.region_extra_legit_qps, self._weights).site_qps
+        finished = []
+        for probe in due:  # in the order they were requested
+            target = probe.request.target
+            state: ServerState | SiteState
+            if target in self.topology.servers:
+                state = self._server_state(ServerId(target), tick, effects, capacity, results)
+            else:
+                state = self._site_state(SiteId(target), tick, effects, capacity, results, surge)
+            outcome = probe_outcome(probe.request.kind, state, self._probe_rng)
+            finished.append(ProbeResult(probe.request, probe.issued, tick, outcome))
+            self.events.append(
+                tick,
+                "probe_result",
+                probe_id=probe.probe_id,
+                kind=str(probe.request.kind),
+                target=target,
+                outcome=str(outcome),
+            )
+        return tuple(finished)
+
+    def _fault_active(self, kind: FaultKind, target: str, tick: int) -> bool:
+        return any(
+            fault.kind == kind and fault.target == target and fault.active_at(tick)
+            for index, fault in enumerate(self.faults)
+            if index not in self.truth.cleared
+        )
+
+    def _site_down(self, site: SiteId, tick: int) -> bool:
+        """Whether the whole site is off: an outage, or a site-wide repair under way."""
+        return self._fault_active(FaultKind.SITE_OUTAGE, site, tick) or any(
+            r.action.kind == ActionKind.REQUEST_REPAIR and r.action.target == site
+            for r in self._running.values()
+        )
+
+    def _queue_fill(self, site: SiteId, results: Mapping[SiteId, SiteTick]) -> float:
+        limit = self.topology.sites[site].queue_limit
+        return min(1.0, results[site].queue_depth / limit) if limit > 0 else 0.0
+
+    def _server_state(
+        self,
+        server: ServerId,
+        tick: int,
+        effects: FaultEffects,
+        capacity: Mapping[ServerId, float],
+        results: Mapping[SiteId, SiteTick],
+    ) -> ServerState:
+        site = self.topology.site_of(server)
+        lost_capacity = 1.0 - effects.server_capacity_factor.get(server, 1.0)
+        return ServerState(
+            managed=not (self._repairing(server) or self._site_down(site, tick)),
+            host_up=not self._host_unreachable(server, tick),
+            process_up=capacity[server] > 0.0,
+            hardware_fault=self._fault_active(FaultKind.HARDWARE, server, tick),
+            slowness=max(lost_capacity, self._queue_fill(site, results)),
+        )
+
+    def _site_state(
+        self,
+        site: SiteId,
+        tick: int,
+        effects: FaultEffects,
+        capacity: Mapping[ServerId, float],
+        results: Mapping[SiteId, SiteTick],
+        surge_routed: Mapping[SiteId, float],
+    ) -> SiteState:
+        result = results[site]
+        path_loss = effects.site_path_loss.get(site, 0.0)
+        reaching = result.arrived.total - result.lost.total
+        attack = result.arrived.attack - result.lost.attack
+        surge = surge_routed.get(site, 0.0) * (1.0 - path_loss)
+        return SiteState(
+            path_loss=path_loss,
+            powered=not self._site_down(site, tick),
+            serving=self._site_capacity(site, capacity) > 0.0,
+            slowness=self._queue_fill(site, results),
+            reaching_qps=reaching,
+            attack_share=attack / reaching if reaching > 0.0 else 0.0,
+            surge_share=surge / reaching if reaching > 0.0 else 0.0,
+        )
+
     # .................................................................. traffic
 
     def _server_capacity(self, server: ServerId, effects: FaultEffects) -> float:
@@ -490,21 +639,18 @@ class DnsEnv:
 
     # .................................................................. telemetry
 
+    def _repairing(self, server: ServerId) -> bool:
+        """Whether a repair of the server, or of its whole site, is under way."""
+        busy = self._busy_servers.get(server)
+        return busy is not None and self._running[busy].action.kind == ActionKind.REQUEST_REPAIR
+
     def _host_unreachable(self, server: ServerId, tick: int) -> bool:
         """Whether the server's host is off (hardware fault, site outage, repair)."""
-        if server in self._busy_servers:
-            running = self._running[self._busy_servers[server]]
-            if running.action.kind == ActionKind.REQUEST_REPAIR:
-                return True
-        site = self.topology.site_of(server)
-        for index, fault in enumerate(self.faults):
-            if index in self.truth.cleared or not fault.active_at(tick):
-                continue
-            if fault.kind == FaultKind.HARDWARE and fault.target == server:
-                return True
-            if fault.kind == FaultKind.SITE_OUTAGE and fault.target == site:
-                return True
-        return False
+        return (
+            self._repairing(server)
+            or self._fault_active(FaultKind.HARDWARE, server, tick)
+            or self._fault_active(FaultKind.SITE_OUTAGE, self.topology.site_of(server), tick)
+        )
 
     def _site_latency_ms(
         self, site: SiteId, result: SiteTick, capacity: float, mix: Mapping[RegionId, float]
@@ -529,6 +675,7 @@ class DnsEnv:
         results: Mapping[SiteId, SiteTick],
         mix: Mapping[SiteId, Mapping[RegionId, float]],
         updates: tuple[ActionUpdate, ...],
+        probes: tuple[ProbeResult, ...],
     ) -> Observation:
         cfg = self.config
         # Site amounts: qps, latency, queue, ok, failed. Site fractions: loss.
@@ -602,4 +749,5 @@ class DnsEnv:
             sites=MappingProxyType(sites),
             servers=MappingProxyType(servers),
             action_updates=updates,
+            probe_results=probes,
         )

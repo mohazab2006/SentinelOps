@@ -19,6 +19,7 @@ import numpy as np
 import numpy.typing as npt
 
 from sentinelops.sim.actions import ActionUpdate
+from sentinelops.sim.probes import ProbeResult
 from sentinelops.sim.topology import ServerId, SiteId
 
 FloatArray = npt.NDArray[np.float64]
@@ -47,7 +48,7 @@ class SiteTelemetry:
     """Readings for one site.
 
     Attributes:
-        qps: Queries arriving at the site this tick.
+        qps: Queries reaching the site this tick, after path loss.
         p95_latency_ms: 95th-percentile response time seen by clients, in ms.
         loss: Fraction of queries lost on the way to the site, as measured by
             external monitoring, in ``[0, 1]``.
@@ -78,12 +79,14 @@ class Observation:
         sites: Telemetry for every site.
         servers: Telemetry for every server.
         action_updates: Status changes of the agent's actions during this tick.
+        probe_results: Results of the agent's probes that finished this tick.
     """
 
     tick: int
     sites: Mapping[SiteId, SiteTelemetry]
     servers: Mapping[ServerId, ServerTelemetry]
     action_updates: tuple[ActionUpdate, ...]
+    probe_results: tuple[ProbeResult, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

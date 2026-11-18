@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from sentinelops.sim.actions import Action
+from sentinelops.sim.probes import ProbeRequest
 from sentinelops.sim.telemetry import Observation
 from sentinelops.sim.topology import Topology
 
@@ -29,8 +30,12 @@ class Agent(Protocol):
         """Forget all state from previous runs and prepare for ``topology``."""
         ...
 
-    def act(self, obs: Observation) -> Sequence[Action]:
-        """Return the actions to take after seeing ``obs`` (may be empty)."""
+    def act(self, obs: Observation) -> Sequence[Action | ProbeRequest]:
+        """Return the actions to take and probes to run after seeing ``obs`` (may be empty).
+
+        An agent that never probes may declare ``Sequence[Action]``; it still
+        satisfies this protocol.
+        """
         ...
 
 
