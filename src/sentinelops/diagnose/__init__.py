@@ -7,5 +7,16 @@ from sentinelops.diagnose.bn import (
     DiagnosisNetwork,
     fit_network,
 )
+from sentinelops.diagnose.inference import Belief, Hypothesis, hypotheses, posterior
 
-__all__ = ["FAULT_STATES", "LEVELS", "SYMPTOMS", "DiagnosisNetwork", "fit_network"]
+__all__ = [
+    "FAULT_STATES",
+    "LEVELS",
+    "SYMPTOMS",
+    "Belief",
+    "DiagnosisNetwork",
+    "Hypothesis",
+    "fit_network",
+    "hypotheses",
+    "posterior",
+]
