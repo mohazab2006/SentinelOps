@@ -4,19 +4,33 @@ Subcommands:
 
 * ``run`` — run an agent on seeded scenarios of one family and report the
   share of failed legitimate queries per seed.
+* ``report-detection`` — measure the detector and the diagnosis network on
+  labelled tune-split runs.
+* ``serve`` — start the operations console API (and the built web console).
 
-More subcommands (experiments, the console server) are added as they are built.
+More subcommands (experiments, replay) are added as they are built.
 """
 
 from __future__ import annotations
 
 import argparse
 import statistics
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from sentinelops import __version__
+from sentinelops.detect import IsolationDetector, healthy_windows
+from sentinelops.diagnose import fit_network
+from sentinelops.eval.dataset import Dataset, build_dataset
 from sentinelops.eval.harness import AGENTS, RunResult, make_agent, simulate, summarize
+from sentinelops.eval.report import (
+    detection_report,
+    diagnosis_report,
+    format_detection,
+    format_diagnosis,
+)
+from sentinelops.eval.splits import Split, split_of
 from sentinelops.scenarios import FAMILIES, Scenario, generate
 from sentinelops.scenarios.families import DEFAULT_HORIZON
 from sentinelops.sim.topology import default_topology
@@ -87,6 +101,61 @@ def build_parser() -> argparse.ArgumentParser:
         help="also write each run's event log to DIR as JSON Lines",
     )
     run.set_defaults(subparser=run)
+
+    report = commands.add_parser(
+        "report-detection",
+        help="measure detection and diagnosis on labelled tune-split runs",
+        description=(
+            "Fit the detector on healthy runs and the diagnosis network on train-split "
+            "runs, then score both on tune-split runs. The test split is never used."
+        ),
+    )
+    report.add_argument(
+        "--tune-seeds",
+        type=parse_seeds,
+        default=parse_seeds("100-105"),
+        metavar="LIST",
+        help="tune-split seeds to score, per family (default: 100-105)",
+    )
+    report.add_argument(
+        "--train-seeds",
+        type=parse_seeds,
+        default=parse_seeds("0-9"),
+        metavar="LIST",
+        help="train-split seeds to fit the network on, per family (default: 0-9)",
+    )
+    report.add_argument(
+        "--healthy-seeds",
+        type=parse_seeds,
+        default=parse_seeds("0-4"),
+        metavar="LIST",
+        help="fault-free runs to fit the detector on (default: 0-4)",
+    )
+    report.add_argument(
+        "--families",
+        nargs="+",
+        choices=FAMILIES,
+        default=list(FAMILIES),
+        metavar="FAMILY",
+        help="scenario families to include (default: all)",
+    )
+    report.set_defaults(subparser=report)
+
+    serve = commands.add_parser(
+        "serve",
+        help="start the operations console API",
+        description="Serve the console API and, once built, the web console.",
+    )
+    serve.add_argument("--host", default="127.0.0.1", help="interface (default: 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=8000, help="port (default: 8000)")
+    serve.add_argument(
+        "--console",
+        type=Path,
+        default=Path("web/dist"),
+        metavar="DIR",
+        help="built web console to serve at / (default: web/dist, if it exists)",
+    )
+    serve.set_defaults(subparser=serve)
     return parser
 
 
@@ -148,6 +217,63 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _seeds_in(split: Split, seeds: Sequence[int]) -> str | None:
+    """An error message if any seed is outside ``split``, else ``None``."""
+    outside = [seed for seed in seeds if split_of(seed) is not split]
+    return f"seeds {outside} are not in the {split} split" if outside else None
+
+
+def _report_detection(args: argparse.Namespace) -> int:
+    """Execute the ``report-detection`` subcommand."""
+    parser: argparse.ArgumentParser = args.subparser
+    for split, seeds in ((Split.TUNE, args.tune_seeds), (Split.TRAIN, args.train_seeds)):
+        if (problem := _seeds_in(split, seeds)) is not None:
+            parser.error(problem)
+    topology = default_topology()
+
+    def labelled(seeds: Sequence[int], what: str) -> Dataset:
+        scenarios = [generate(f, seed, topology) for f in args.families for seed in seeds]
+        print(f"labelling {len(scenarios)} {what} runs ...", file=sys.stderr, flush=True)
+        return build_dataset(scenarios, topology)
+
+    tune = labelled(args.tune_seeds, "tune")
+    print("fitting the detector on healthy runs ...", file=sys.stderr, flush=True)
+    detector = IsolationDetector(seed=0).fit(healthy_windows(topology, args.healthy_seeds))
+    windows = tune.windows
+    detection = detection_report(detector.score(windows.features), windows.fault, windows.kind)
+    network = fit_network(labelled(args.train_seeds, "train"))
+    print("diagnosing ...", file=sys.stderr, flush=True)
+    diagnosis = diagnosis_report(network, tune, topology)
+
+    seeds = ",".join(map(str, args.tune_seeds))
+    print(f"tune seeds {seeds} | families: {' '.join(args.families)}")
+    print(
+        f"detector fitted on {len(args.healthy_seeds)} healthy runs, network on "
+        f"{len(args.train_seeds)} train seeds per family"
+    )
+    print()
+    print(format_detection(detection))
+    print()
+    print(format_diagnosis(diagnosis))
+    return 0
+
+
+def _serve(args: argparse.Namespace) -> int:
+    """Execute the ``serve`` subcommand."""
+    import uvicorn
+
+    from sentinelops.api.app import create_app
+
+    if not args.console.is_dir():
+        print(
+            f"note: no built console at {args.console}; serving the API only "
+            "(build it with `npm run build` in web/, or pass --console DIR)",
+            file=sys.stderr,
+        )
+    uvicorn.run(create_app(static_dir=args.console), host=args.host, port=args.port)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI and return a process exit code.
 
@@ -161,6 +287,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "run":
         return _run(args)
+    if args.command == "report-detection":
+        return _report_detection(args)
+    if args.command == "serve":
+        return _serve(args)
     parser.print_help()
     return 0
 

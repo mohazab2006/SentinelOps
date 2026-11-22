@@ -104,3 +104,57 @@ def test_unusable_events_path_is_a_clear_error(
     assert exit_info.value.code == 2
     assert "cannot write event logs to" in capsys.readouterr().err
     assert taken.read_text() == "not a directory"  # nothing was simulated or overwritten
+
+
+def test_report_detection_prints_detection_and_diagnosis(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = ["report-detection", "--tune-seeds", "100", "--train-seeds", "0"]
+    assert cli.main([*args, "--healthy-seeds", "0", "--families", "crash", "hardware"]) == 0
+    captured = capsys.readouterr()
+    assert "tune seeds 100 | families: crash hardware" in captured.out
+    assert "Detection (benign surges count as positives)" in captured.out
+    assert "Sensitivity: benign surges count as healthy" in captured.out
+    assert "Benign-surge windows alerted: 0.0% of 0" in captured.out
+    assert "Diagnosis given an alert" in captured.out
+    assert "labelling 2 tune runs" in captured.err  # progress goes to stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "problem"),
+    [
+        (["--tune-seeds", "1000"], "not in the tune split"),  # the held-out test split
+        (["--tune-seeds", "5"], "not in the tune split"),
+        (["--train-seeds", "100"], "not in the train split"),
+    ],
+)
+def test_report_detection_refuses_seeds_from_another_split(
+    args: list[str], problem: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["report-detection", *args])
+    assert exit_info.value.code == 2
+    assert problem in capsys.readouterr().err
+
+
+def test_serve_starts_uvicorn_with_the_console(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import uvicorn
+
+    calls: list[tuple[object, dict[str, object]]] = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: calls.append((app, kwargs)))
+    assert cli.main(["serve", "--port", "8123", "--console", str(tmp_path)]) == 0
+    (app, kwargs) = calls[0]
+    assert kwargs == {"host": "127.0.0.1", "port": 8123}
+    assert app.title == "SentinelOps console API"  # type: ignore[attr-defined]
+
+
+def test_serve_says_when_there_is_no_built_console(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: None)
+    assert cli.main(["serve", "--console", str(tmp_path / "missing")]) == 0
+    assert "serving the API only" in capsys.readouterr().err

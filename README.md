@@ -65,6 +65,20 @@ Families: `crash`, `exhaustion`, `hardware`, `path_loss`, `site_outage`,
 `flood`, `benign_surge`, `mixed`. Add `--events DIR` to save each run's event
 log as JSON Lines.
 
+### Detection report
+
+Measure the detector and the diagnosis network on labelled tune-split runs
+(the test split stays held out for the final evaluation):
+
+```bash
+uv run sentinelops report-detection
+```
+
+It prints precision, recall, F1 and false-positive rate at the tuned alert
+threshold, the same with benign surges counted as false alarms, recall per
+fault kind, and how often the Bayesian network names the right fault given
+symptoms, probe results or both.
+
 ## Development
 
 ```bash

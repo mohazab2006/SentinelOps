@@ -13,9 +13,11 @@ at least a threshold. Choosing the threshold is a trade-off:
 Accuracy is deliberately not used: faults are rare, so "never alert" would
 already look very accurate while catching nothing.
 
-The threshold is chosen on the tuning runs only (which include harmless
-traffic surges, so spikes that need no fix are penalised) and then frozen
-before the held-out test runs are scored.
+The threshold is chosen on the tuning runs only and then frozen before the
+held-out test runs are scored. The tuning runs include harmless traffic
+surges, labelled as faults: from volume alone a surge looks like a flood, so
+detection flags it and diagnosis rules it out (see
+:mod:`sentinelops.eval.report`).
 """
 
 from __future__ import annotations
