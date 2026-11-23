@@ -11,7 +11,7 @@ Task IDs are prefixed by owner: **M** = Mohamed Azab, **Y** = Yassin Koubeisy.
 | Milestone | Window | Status |
 |---|---|---|
 | [M1 — Simulator and baseline](#m1--simulator-and-baseline) | Nov 9 – Nov 15 | 🟢 Complete |
-| [M2 — Learned models](#m2--learned-models) | Nov 16 – Nov 22 | 🟡 In progress (6/8) |
+| [M2 — Learned models](#m2--learned-models) | Nov 16 – Nov 22 | 🟡 In progress (7/8) |
 | [M3 — Decision-making agent](#m3--decision-making-agent) | Nov 23 – Nov 29 | ⚪ Planned |
 | [M4 — Evaluation and demo features](#m4--evaluation-and-demo-features) | Nov 30 – Dec 4 | ⚪ Planned |
 | [M5 — Release](#m5--release) | Dec 5 – Dec 11 | ⚪ Planned |
@@ -48,7 +48,7 @@ on the tuning split; the console globe reflects live site health.
 - [x] ~~M2.3 Bayesian network structure and parameter fitting ([#13](https://github.com/mohazab2006/SentinelOps/issues/13))~~ — Mohamed · Nov 20
 - [x] ~~Y2.3 Alert threshold tuning and detection metrics ([#14](https://github.com/mohazab2006/SentinelOps/issues/14))~~ — Yassin · Nov 21
 - [ ] M2.4 Bayesian inference, console API and live globe ([#15](https://github.com/mohazab2006/SentinelOps/issues/15)) — Mohamed
-- [ ] Y2.4 Policy rule engine ([#16](https://github.com/mohazab2006/SentinelOps/issues/16)) — Yassin
+- [x] ~~Y2.4 Policy rule engine ([#16](https://github.com/mohazab2006/SentinelOps/issues/16))~~ — Yassin · Nov 22
 
 ## M3 — Decision-making agent
 
