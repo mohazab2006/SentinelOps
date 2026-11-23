@@ -79,6 +79,19 @@ threshold, the same with benign surges counted as false alarms, recall per
 fault kind, and how often the Bayesian network names the right fault given
 symptoms, probe results or both.
 
+### Operations console
+
+The console streams a live run to a globe: each site turns amber when the
+detector flags one window and red once the alert persists.
+
+```bash
+cd web && npm ci && npm run build && cd ..   # build the console once (Node 22)
+uv run sentinelops serve                     # then open http://127.0.0.1:8000
+```
+
+For frontend work, run `uv run sentinelops serve` and `npm run dev` in `web/`
+together; Vite proxies `/api` and `/ws` to the server.
+
 ## Development
 
 ```bash
@@ -105,6 +118,7 @@ src/sentinelops/
   baselines/  threshold-rule baseline and ablations
   eval/       experiment harness and statistics
   api/        API for the operations console
+web/          operations console (React, TypeScript, globe)
 tests/        unit and integration tests
 ```
 
