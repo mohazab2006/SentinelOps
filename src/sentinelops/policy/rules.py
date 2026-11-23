@@ -89,6 +89,12 @@ class TimeWindow:
         return hour >= self.start_hour or hour < self.end_hour  # wraps past midnight
 
 
+def _reject_string(field_name: str, value: object, example: str) -> None:
+    """Raise ``TypeError`` if ``value`` is a plain string instead of a set."""
+    if isinstance(value, str):
+        raise TypeError(f"{field_name} must be a set, not a string: use {example}")
+
+
 @dataclass(frozen=True, slots=True)
 class Rule:
     """One line of an operator policy.
@@ -114,8 +120,13 @@ class Rule:
         """Convert ``decision`` and ``kinds`` to their enums.
 
         Raises:
+            TypeError: If ``kinds`` or ``targets`` is a plain string. A string
+                is a sequence of letters, so ``frozenset("lon")`` would
+                silently become ``{'l', 'o', 'n'}``.
             ValueError: If the decision or a kind is an unknown string.
         """
+        _reject_string("kinds", self.kinds, "frozenset({'restart'})")
+        _reject_string("targets", self.targets, "frozenset({'lon'})")
         object.__setattr__(self, "decision", Decision(self.decision))
         object.__setattr__(self, "kinds", frozenset(ActionKind(kind) for kind in self.kinds))
         object.__setattr__(self, "targets", frozenset(self.targets))
@@ -151,8 +162,14 @@ class RuleSet:
     Args:
         rules: The rules, highest priority first.
         default: Decision when no rule matches.
-        topology: Lets a site target also cover the site's servers; without
-            it targets match exactly only.
+        topology: Lets a site target also cover the site's servers, and is
+            used to check every target exists; without it targets match
+            exactly only and are not checked.
+
+    Raises:
+        ValueError: If ``topology`` is given and a rule's target is neither
+            a site id nor a server id in it (usually a typo, which would
+            otherwise make the rule silently match nothing).
     """
 
     def __init__(
@@ -161,10 +178,12 @@ class RuleSet:
         default: Decision = Decision.REQUIRE_APPROVAL,
         topology: Topology | None = None,
     ) -> None:
-        """Store the rules read-only and convert ``default`` to a :class:`Decision`."""
+        """Store the rules read-only, convert ``default`` and check the targets."""
         self._rules = tuple(rules)
         self._default = Decision(default)
         self._topology = topology
+        if topology is not None:
+            _check_targets(self._rules, topology)
 
     @property
     def rules(self) -> tuple[Rule, ...]:
@@ -202,3 +221,13 @@ class RuleSet:
             if rule.matches(action, weekday, hour, self._topology):
                 return rule.decision, rule
         return self._default, None
+
+
+def _check_targets(rules: tuple[Rule, ...], topology: Topology) -> None:
+    """Raise ``ValueError`` for a target that is neither a site nor a server."""
+    known = set(topology.sites) | set(topology.servers)
+    for index, rule in enumerate(rules):
+        unknown = sorted(rule.targets - known)
+        if unknown:
+            label = repr(rule.name) if rule.name else f"#{index}"
+            raise ValueError(f"rule {label} has unknown targets {unknown} (not a site or server)")

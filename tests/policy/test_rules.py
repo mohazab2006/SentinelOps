@@ -237,3 +237,48 @@ def test_rule_and_window_are_frozen() -> None:
         rule.decision = Decision.BLOCK  # type: ignore[misc]
     with pytest.raises(dataclasses.FrozenInstanceError):
         BUSINESS_HOURS.start_hour = 0  # type: ignore[misc]
+
+
+# ------------------------------------------------------------------ target hardening (Y3.0)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"targets": "lon"}, r"targets must be a set.*frozenset\(\{'lon'\}\)"),
+        ({"kinds": "restart"}, r"kinds must be a set.*frozenset\(\{'restart'\}\)"),
+    ],
+)
+def test_plain_string_instead_of_a_set_is_rejected(kwargs: dict[str, Any], message: str) -> None:
+    with pytest.raises(TypeError, match=message):
+        Rule(Decision.BLOCK, **kwargs)
+
+
+def test_a_list_of_ids_is_still_accepted() -> None:
+    rule = Rule(Decision.BLOCK, kinds=[ActionKind.RESTART], targets=["lon"])  # type: ignore[arg-type]
+    assert rule.targets == frozenset({"lon"})
+    assert rule.kinds == frozenset({ActionKind.RESTART})
+
+
+def test_unknown_target_with_a_topology_is_rejected_naming_the_rule() -> None:
+    typo = Rule(Decision.BLOCK, targets=frozenset({"tor"}), name="keep Toronto up")
+    with pytest.raises(ValueError, match=r"'keep Toronto up'.*'tor'"):
+        RuleSet([typo], topology=default_topology())
+
+
+def test_unknown_target_in_an_unnamed_rule_is_reported_by_its_index() -> None:
+    rules = [Rule(Decision.ALLOW), Rule(Decision.BLOCK, targets=frozenset({"yyz", "tor"}))]
+    with pytest.raises(ValueError, match=r"#1.*'tor'"):
+        RuleSet(rules, topology=default_topology())
+
+
+def test_site_and_server_ids_pass_validation() -> None:
+    rule = Rule(Decision.BLOCK, targets=frozenset({"yyz", "yyz-1"}))
+    policy = RuleSet([rule], topology=default_topology())
+    assert policy.evaluate(Action(ActionKind.RESTART, "yyz-1"), MON, 10) == Decision.BLOCK
+
+
+def test_without_a_topology_unknown_targets_are_allowed_and_match_exactly() -> None:
+    policy = RuleSet([Rule(Decision.BLOCK, targets=frozenset({"tor"}))])
+    assert policy.evaluate(Action(ActionKind.WITHDRAW, "tor"), MON, 10) == Decision.BLOCK
+    assert policy.evaluate(WITHDRAW_YYZ, MON, 10) == Decision.REQUIRE_APPROVAL
