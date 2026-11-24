@@ -19,6 +19,7 @@ import numpy as np
 import numpy.typing as npt
 
 from sentinelops.sim.actions import ActionUpdate
+from sentinelops.sim.calendar import DEFAULT_START, SimTime
 from sentinelops.sim.probes import ProbeResult
 from sentinelops.sim.topology import ServerId, SiteId
 
@@ -80,6 +81,8 @@ class Observation:
         servers: Telemetry for every server.
         action_updates: Status changes of the agent's actions during this tick.
         probe_results: Results of the agent's probes that finished this tick.
+        calendar: The moment of the week this tick falls on, for time-dependent
+            policies (Monday 10:00 for observations built by hand).
     """
 
     tick: int
@@ -87,6 +90,7 @@ class Observation:
     servers: Mapping[ServerId, ServerTelemetry]
     action_updates: tuple[ActionUpdate, ...]
     probe_results: tuple[ProbeResult, ...] = ()
+    calendar: SimTime = DEFAULT_START
 
 
 @dataclass(frozen=True, slots=True)

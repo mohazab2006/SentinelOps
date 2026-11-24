@@ -40,6 +40,7 @@ from sentinelops.sim.actions import (
     action_targets,
     validate_action,
 )
+from sentinelops.sim.calendar import Calendar
 from sentinelops.sim.events import EventLog
 from sentinelops.sim.faults import (
     ClearingAction,
@@ -90,6 +91,9 @@ class EnvConfig:
             fibre covers about 200 km per ms one way, so 100 km round trip.
         idle_cpu: CPU utilisation of a running server with no load.
         base_mem: Memory utilisation of a healthy, idle server.
+        calendar: Moment of the week of tick 0; each observation carries the
+            moment of its tick. Only policies read it: demand, faults and noise
+            are the same whatever the start time.
     """
 
     noise: NoiseConfig = field(default_factory=NoiseConfig)
@@ -99,6 +103,7 @@ class EnvConfig:
     km_per_ms_rtt: float = 100.0
     idle_cpu: float = 0.03
     base_mem: float = 0.30
+    calendar: Calendar = field(default_factory=Calendar)
 
 
 class RunTruth:
@@ -266,7 +271,13 @@ class DnsEnv:
         """Start the run from scratch and return the observation of tick 0."""
         self._init_state()
         self._started = True
-        self.events.append(0, "run_started", horizon=self.horizon, seed=self.seed)
+        self.events.append(
+            0,
+            "run_started",
+            horizon=self.horizon,
+            seed=self.seed,
+            start=str(self.config.calendar.start),
+        )
         return self._advance(())
 
     def step(self, actions: Sequence[Action | ProbeRequest]) -> Observation:
@@ -750,4 +761,5 @@ class DnsEnv:
             servers=MappingProxyType(servers),
             action_updates=updates,
             probe_results=probes,
+            calendar=self.config.calendar.at(tick),
         )
