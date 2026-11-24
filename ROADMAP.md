@@ -56,7 +56,7 @@ on the tuning split; the console globe reflects live site health.
 hardware fault is escalated, approved, repaired and returned to service
 gradually after verification.
 
-- [ ] M3.1 Probe selection by expected entropy reduction per second ([#17](https://github.com/mohazab2006/SentinelOps/issues/17)) — Mohamed
+- [x] M3.1 Probe selection by expected entropy reduction per second ([#17](https://github.com/mohazab2006/SentinelOps/issues/17)) — Mohamed
 - [ ] Y3.1 Autonomy presets, approvals and maintenance holds ([#18](https://github.com/mohazab2006/SentinelOps/issues/18)) — Yassin
 - [ ] M3.2 Recovery forecasting over candidate actions and fault hypotheses ([#19](https://github.com/mohazab2006/SentinelOps/issues/19)) — Mohamed
 - [ ] Y3.2 Recovery verification checklist ([#20](https://github.com/mohazab2006/SentinelOps/issues/20)) — Yassin

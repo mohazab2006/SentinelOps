@@ -8,6 +8,14 @@ from sentinelops.diagnose.bn import (
     fit_network,
 )
 from sentinelops.diagnose.inference import Belief, Hypothesis, hypotheses, posterior
+from sentinelops.diagnose.probing import (
+    ProbeChoice,
+    ProbeScore,
+    StopReason,
+    candidate_probes,
+    expected_information_gain,
+    next_probe,
+)
 
 __all__ = [
     "FAULT_STATES",
@@ -16,7 +24,13 @@ __all__ = [
     "Belief",
     "DiagnosisNetwork",
     "Hypothesis",
+    "ProbeChoice",
+    "ProbeScore",
+    "StopReason",
+    "candidate_probes",
+    "expected_information_gain",
     "fit_network",
     "hypotheses",
+    "next_probe",
     "posterior",
 ]
