@@ -58,7 +58,7 @@ gradually after verification.
 
 - [x] M3.1 Probe selection by expected entropy reduction per second ([#17](https://github.com/mohazab2006/SentinelOps/issues/17)) — Mohamed
 - [ ] Y3.1 Autonomy presets, approvals and maintenance holds ([#18](https://github.com/mohazab2006/SentinelOps/issues/18)) — Yassin
-- [ ] M3.2 Recovery forecasting over candidate actions and fault hypotheses ([#19](https://github.com/mohazab2006/SentinelOps/issues/19)) — Mohamed
+- [x] M3.2 Recovery forecasting over candidate actions and fault hypotheses ([#19](https://github.com/mohazab2006/SentinelOps/issues/19)) — Mohamed
 - [ ] Y3.2 Recovery verification checklist ([#20](https://github.com/mohazab2006/SentinelOps/issues/20)) — Yassin
 - [ ] M3.3 Action ranking and incident prioritisation ([#21](https://github.com/mohazab2006/SentinelOps/issues/21)) — Mohamed
 - [ ] Y3.3 Gradual traffic restoration with rollback ([#22](https://github.com/mohazab2006/SentinelOps/issues/22)) — Yassin
