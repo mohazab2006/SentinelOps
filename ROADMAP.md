@@ -12,7 +12,7 @@ Task IDs are prefixed by owner: **M** = Mohamed Azab, **Y** = Yassin Koubeisy.
 |---|---|---|
 | [M1 — Simulator and baseline](#m1--simulator-and-baseline) | Nov 9 – Nov 15 | 🟢 Complete |
 | [M2 — Learned models](#m2--learned-models) | Nov 16 – Nov 22 | 🟢 Complete |
-| [M3 — Decision-making agent](#m3--decision-making-agent) | Nov 23 – Nov 29 | 🟡 In progress |
+| [M3 — Decision-making agent](#m3--decision-making-agent) | Nov 23 – Nov 29 | 🟡 In progress (3/8) |
 | [M4 — Evaluation and demo features](#m4--evaluation-and-demo-features) | Nov 30 – Dec 4 | ⚪ Planned |
 | [M5 — Release](#m5--release) | Dec 5 – Dec 11 | ⚪ Planned |
 
@@ -57,7 +57,7 @@ hardware fault is escalated, approved, repaired and returned to service
 gradually after verification.
 
 - [x] M3.1 Probe selection by expected entropy reduction per second ([#17](https://github.com/mohazab2006/SentinelOps/issues/17)) — Mohamed
-- [ ] Y3.1 Autonomy presets, approvals and maintenance holds ([#18](https://github.com/mohazab2006/SentinelOps/issues/18)) — Yassin
+- [x] ~~Y3.1 Autonomy presets, approvals and maintenance holds ([#18](https://github.com/mohazab2006/SentinelOps/issues/18))~~ — Yassin · Nov 26
 - [x] M3.2 Recovery forecasting over candidate actions and fault hypotheses ([#19](https://github.com/mohazab2006/SentinelOps/issues/19)) — Mohamed
 - [ ] Y3.2 Recovery verification checklist ([#20](https://github.com/mohazab2006/SentinelOps/issues/20)) — Yassin
 - [ ] M3.3 Action ranking and incident prioritisation ([#21](https://github.com/mohazab2006/SentinelOps/issues/21)) — Mohamed
