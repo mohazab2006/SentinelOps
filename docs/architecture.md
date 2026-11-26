@@ -74,7 +74,9 @@ flowchart LR
   uncertainty the most per second spent.
 - **Plan** forecasts the network's queues over a short horizon for each candidate
   action and each plausible fault, and ranks actions by the failed queries they
-  are expected to prevent minus a penalty for disruption.
+  are expected to prevent minus a penalty for disruption. When several sites
+  have incidents at once, the most urgent or costly one is planned first and
+  each is planned with the others' faults and chosen actions in view.
 - **Policy** is a rule-based system that decides, for each proposed action,
   whether it is allowed, blocked, or needs a human's approval.
 - **Verify** requires recovery checks to hold for several consecutive ticks;

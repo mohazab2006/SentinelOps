@@ -109,6 +109,64 @@ def test_unrouted_traffic_is_counted_when_every_site_is_withdrawn() -> None:
     assert result.at_site == result.elsewhere == 0.0
 
 
+def test_every_withdrawn_site_comes_back_once_fault_free() -> None:
+    """Out from the start, every site is restored after 30 quiet ticks (+5 to converge)."""
+    estimate = NetworkEstimate(0, QUIET.demand, dict.fromkeys(TOPO.sites, 0.0))
+    result = rollout(estimate, (), TOPO, site=SITE, config=ForecastConfig(horizon=50))
+    assert result.unrouted == pytest.approx(result.offered * 35 / 50)
+
+
+def test_a_withdrawn_site_with_a_fault_of_its_own_stays_out() -> None:
+    """fra is out; it comes back if nothing is wrong with it, not while it is dead."""
+    weights = {**QUIET.weights, SiteId("fra"): 0.0}
+    estimate = NetworkEstimate(0, QUIET.demand, weights)
+    outage = (Fault(FaultKind.SITE_OUTAGE, "fra", 0, None, 1.0),)
+    never = ForecastConfig(horizon=200, restore_after=None)
+    usual = ForecastConfig(horizon=200)
+    for faults, comes_back in (((), True), (outage, False)):
+        restored = rollout(estimate, faults, TOPO, site=SITE, config=usual)
+        kept_out = rollout(estimate, faults, TOPO, site=SITE, config=never)
+        assert (restored != kept_out) is comes_back
+
+
+def test_a_held_site_stays_out() -> None:
+    weights = {**QUIET.weights, SiteId("fra"): 0.0}
+    config = ForecastConfig(horizon=200)
+    free = NetworkEstimate(0, QUIET.demand, weights)
+    held = NetworkEstimate(0, QUIET.demand, weights, held=frozenset({SiteId("fra")}))
+    never = rollout(
+        free, (), TOPO, site=SITE, config=ForecastConfig(horizon=200, restore_after=None)
+    )
+    assert rollout(held, (), TOPO, site=SITE, config=config) == never
+    assert rollout(free, (), TOPO, site=SITE, config=config) != never
+
+
+def test_context_faults_and_plan_join_every_forecast() -> None:
+    crash = _belief(Hypothesis(FaultKind.CRASH, SERVERS[0]))
+    outage = (Fault(FaultKind.SITE_OUTAGE, "fra", 0, None, 1.0),)
+    withdraw = ((Action(K.WITHDRAW, "fra"), 1),)
+    config = ForecastConfig(horizon=300)
+    alone = forecast_belief(QUIET, crash, TOPO, config=config)
+    busy = forecast_belief(QUIET, crash, TOPO, config=config, context_faults=outage)
+    both = forecast_belief(
+        QUIET, crash, TOPO, config=config, context_faults=outage, context_plan=withdraw
+    )
+    for i, action in enumerate(alone.actions):
+        own = () if action is None else ((action, 1),)
+        faults = (
+            *hypothesis_faults(
+                crash.hypotheses[int(np.argmax(crash.probs))], SITE, QUIET, TOPO, config
+            ),
+            *outage,
+        )
+        expected = rollout(QUIET, faults, TOPO, site=SITE, plan=withdraw + own, config=config)
+        assert both.rollouts[i][0] == expected
+    assert busy.expected_failures()[0] > alone.expected_failures()[0]
+    assert both.expected_failures()[0] < busy.expected_failures()[0]
+    with pytest.raises(ValueError, match="start after"):
+        forecast_belief(QUIET, crash, TOPO, config=config, context_plan=((withdraw[0][0], 0),))
+
+
 # ------------------------------------------------------------------ what forecasts capture
 
 

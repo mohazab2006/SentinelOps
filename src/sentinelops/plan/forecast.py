@@ -48,7 +48,7 @@ import numpy as np
 import numpy.typing as npt
 
 from sentinelops.diagnose.inference import Belief, Hypothesis
-from sentinelops.eval.dataset import HEALTHY
+from sentinelops.eval.dataset import HEALTHY, affected_sites
 from sentinelops.sim.actions import (
     REPAIR_TICKS,
     RESTART_TICKS,
@@ -92,7 +92,7 @@ ASSUMED_TRANSIENT_TICKS = 300
 """How much longer a fault that ends by itself (path loss, flood, surge) is assumed to last."""
 
 DEFAULT_RESTORE_AFTER = 30
-"""Fault-free ticks after which a withdrawn incident site is assumed to be restored."""
+"""Fault-free ticks after which a withdrawn site is assumed to be restored."""
 
 _SURGE_THRESHOLD = 0.01
 """Traffic above normal, as a share of normal, below which no flood or surge is assumed."""
@@ -111,9 +111,9 @@ class ForecastConfig:
         exhaustion_severity: Assumed growth rate of a suspected memory leak.
         transient_ticks: How much longer a fault that ends by itself is assumed
             to last; ``None`` assumes it outlasts the horizon.
-        restore_after: Fault-free ticks after which the agent is assumed to
-            restore a withdrawn incident site, as it does after verifying
-            recovery; ``None`` never restores it.
+        restore_after: Ticks without a fault affecting a withdrawn site after
+            which the agent is assumed to restore it, as it does after
+            verifying recovery; ``None`` never restores it.
     """
 
     horizon: int = DEFAULT_HORIZON
@@ -167,6 +167,8 @@ class NetworkEstimate:
         loss: Measured path loss of each site.
         leak: Estimated share of each server's capacity used up by a memory leak.
         running: Actions still under way.
+        held: Sites that must stay as they are (e.g. the policy blocks
+            restoring them): never restored automatically in a forecast.
     """
 
     tick: int
@@ -178,6 +180,7 @@ class NetworkEstimate:
     loss: Mapping[SiteId, float] = field(default_factory=dict)
     leak: Mapping[ServerId, float] = field(default_factory=dict)
     running: tuple[RunningAction, ...] = ()
+    held: frozenset[SiteId] = frozenset()
 
     def __post_init__(self) -> None:
         """Store read-only copies of the mappings."""
@@ -192,6 +195,7 @@ class NetworkEstimate:
         ):
             object.__setattr__(self, name, _frozen(getattr(self, name)))
         object.__setattr__(self, "running", tuple(self.running))
+        object.__setattr__(self, "held", frozenset(self.held))
 
     @classmethod
     def healthy(cls, topology: Topology, tick: int = 0) -> NetworkEstimate:
@@ -446,6 +450,8 @@ class _World:
         }
         self.cleared: set[int] = set()
         self.weights_changed = True
+        self.fault_sites = tuple(affected_sites(f, topology) for f in faults)
+        self.held = estimate.held
 
     def finish_actions(self, tick: int) -> None:
         due = [r for r in self.running if r.end_tick <= tick]
@@ -486,10 +492,11 @@ class _World:
             self.running.append(_Running(action, tick + _duration(action, self.config)))
             self.busy.update(servers)
 
-    def quiet(self, tick: int) -> bool:
-        """Whether no fault is active (and uncleared) at ``tick``."""
+    def quiet(self, site: SiteId, tick: int) -> bool:
+        """Whether no fault affecting ``site`` is active (and uncleared) at ``tick``."""
         return not any(
-            i not in self.cleared and f.active_at(tick) for i, f in enumerate(self.faults)
+            i not in self.cleared and site in self.fault_sites[i] and f.active_at(tick)
+            for i, f in enumerate(self.faults)
         )
 
     def rerouting(self, site: SiteId) -> bool:
@@ -524,6 +531,41 @@ def _shares(
     return {r: catchment_shares(topology.preferences[r], weights) for r in topology.regions}
 
 
+def _restore_out_sites(
+    world: _World,
+    tick: int,
+    quiet_since: dict[SiteId, int | None],
+    out_since: dict[SiteId, int | None],
+    restore_after: int | None,
+) -> int | None:
+    """Restore every site that has been out and fault-free long enough.
+
+    Updates the per-site stretches in place and returns the first later tick at
+    which a site is due to be restored, or ``None``.
+    """
+    due: int | None = None
+    for s in world.topology.sites:
+        if not world.quiet(s, tick):
+            quiet_since[s] = None
+        elif quiet_since[s] is None:
+            quiet_since[s] = tick
+        if world.weights[s] >= 1.0:
+            out_since[s] = None
+        elif out_since[s] is None:
+            out_since[s] = tick
+        quiet, out = quiet_since[s], out_since[s]
+        if restore_after is None or quiet is None or out is None:
+            continue
+        if s in world.held or world.rerouting(s):
+            continue
+        at = max(quiet, out) + restore_after
+        if tick >= at:
+            world.start_action(tick, Action(ActionKind.RESTORE, s, weight=1.0))
+        else:
+            due = at if due is None else min(due, at)
+    return due
+
+
 def rollout(
     estimate: NetworkEstimate,
     faults: Sequence[Fault],
@@ -539,9 +581,10 @@ def rollout(
     rules: actions finish, then new ones start, then faults take effect,
     demand is routed and every site serves its queue. Durations are the
     expected ones and demand is the estimate's, so the result is deterministic.
-    Once the incident site has been out (withdrawn or partly restored) with no
-    fault active for ``config.restore_after`` ticks, it is restored to full
-    weight, as the agent would after verifying recovery.
+    Once a site has been out (withdrawn or partly restored) with no fault
+    affecting it for ``config.restore_after`` ticks, it is restored to full
+    weight, as the agent would after verifying recovery, unless the estimate
+    holds it.
 
     Args:
         estimate: The starting state.
@@ -571,8 +614,9 @@ def rollout(
     offered = at_site = elsewhere = unrouted = 0.0
     previous: tuple[float, ...] | None = None
     clock = 0  # the queues' own clock: it only moves on simulated ticks
-    quiet_since: int | None = None  # first tick of the current fault-free stretch
-    out_since: int | None = None  # first tick of the incident site's current time out
+    # per site: first tick of its current fault-free stretch, and of its current time out
+    quiet_since: dict[SiteId, int | None] = dict.fromkeys(sites)
+    out_since: dict[SiteId, int | None] = dict.fromkeys(sites)
     same = 0  # ticks in a row identical to the one before
     settle = max(topology.sites[s].timeout_ticks for s in sites) + 1
     tick = start
@@ -581,25 +625,7 @@ def rollout(
         for action, at in plan:
             if at == tick:
                 world.start_action(tick, action)
-        if not world.quiet(tick):
-            quiet_since = None
-        elif quiet_since is None:
-            quiet_since = tick
-        if world.weights[incident] >= 1.0:
-            out_since = None
-        elif out_since is None:
-            out_since = tick
-        restore_at: int | None = None
-        if (
-            cfg.restore_after is not None
-            and quiet_since is not None
-            and out_since is not None
-            and not world.rerouting(incident)
-        ):
-            restore_at = max(quiet_since, out_since) + cfg.restore_after
-            if tick >= restore_at:
-                world.start_action(tick, Action(ActionKind.RESTORE, site, weight=1.0))
-                restore_at = None
+        restore_at = _restore_out_sites(world, tick, quiet_since, out_since, cfg.restore_after)
         effects = compute_effects(world.faults, tick, topology, world.cleared)
         if world.weights_changed:
             shares = _shares(topology, world.weights)
@@ -730,6 +756,8 @@ def forecast_belief(
     delays: Mapping[Action, int] | None = None,
     min_prob: float = DEFAULT_MIN_PROB,
     config: ForecastConfig | None = None,
+    context_faults: Sequence[Fault] = (),
+    context_plan: Sequence[tuple[Action, int]] = (),
 ) -> ForecastTable:
     """Forecast every candidate action under every plausible hypothesis of ``belief``.
 
@@ -743,9 +771,14 @@ def forecast_belief(
         min_prob: Hypotheses less likely than this are skipped. The most likely
             hypothesis is always kept.
         config: Horizon and expected durations.
+        context_faults: Faults assumed present elsewhere in every forecast,
+            e.g. the likeliest causes of other open incidents.
+        context_plan: ``(action, tick)`` pairs already decided for other
+            incidents, run alongside every candidate.
 
     Raises:
-        ValueError: If ``min_prob`` is outside ``[0, 1]`` or a delay is negative.
+        ValueError: If ``min_prob`` is outside ``[0, 1]``, a delay is negative,
+            or a context action starts before the first forecast tick.
     """
     if not 0.0 <= min_prob <= 1.0:
         raise ValueError(f"min_prob must be in [0, 1], got {min_prob}")
@@ -761,9 +794,14 @@ def forecast_belief(
     first = estimate.tick + 1
     rows: list[list[Rollout]] = [[] for _ in choices]
     for j in kept:
-        faults = hypothesis_faults(belief.hypotheses[j], site, estimate, topology, cfg)
+        faults = (
+            *hypothesis_faults(belief.hypotheses[j], site, estimate, topology, cfg),
+            *context_faults,
+        )
         for i, action in enumerate(choices):
-            plan = () if action is None else ((action, first + waits.get(action, 0)),)
+            plan = tuple(context_plan)
+            if action is not None:
+                plan += ((action, first + waits.get(action, 0)),)
             rows[i].append(rollout(estimate, faults, topology, site=site, plan=plan, config=cfg))
     probs.flags.writeable = False
     return ForecastTable(
