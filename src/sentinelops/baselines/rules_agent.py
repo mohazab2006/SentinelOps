@@ -48,7 +48,10 @@ SITE_DOWN_LOSS = 0.95
 RATE_LIMIT_HEADROOM = 1.2
 """A rate limit lets through this multiple of the site's normal traffic."""
 
-_DONE = frozenset({ActionStatus.SUCCEEDED, ActionStatus.FAILED})
+_DONE = frozenset(
+    {ActionStatus.SUCCEEDED, ActionStatus.FAILED, ActionStatus.BLOCKED, ActionStatus.REJECTED}
+)
+"""Final statuses: the action is over, whether it ran or the policy stopped it."""
 
 
 @dataclass(frozen=True, slots=True)

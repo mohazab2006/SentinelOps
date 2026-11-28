@@ -83,8 +83,11 @@ class Action:
 class ActionStatus(StrEnum):
     """Lifecycle states of an action.
 
-    Without a policy layer every action is started as soon as it is requested
-    (``RUNNING``). The approval states are used once operator policy is added.
+    Without an operator policy every action is started as soon as it is
+    requested (``RUNNING``). With one, the environment may report it
+    ``BLOCKED``, or ``PENDING_APPROVAL`` and then ``APPROVED`` (followed by
+    ``RUNNING``) or ``REJECTED``. ``SUCCEEDED``, ``FAILED``, ``BLOCKED`` and
+    ``REJECTED`` are final.
     """
 
     PENDING_APPROVAL = "pending_approval"

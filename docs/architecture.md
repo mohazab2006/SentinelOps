@@ -78,7 +78,10 @@ flowchart LR
   have incidents at once, the most urgent or costly one is planned first and
   each is planned with the others' faults and chosen actions in view.
 - **Policy** is a rule-based system that decides, for each proposed action,
-  whether it is allowed, blocked, or needs a human's approval.
+  whether it is allowed, blocked, or needs a human's approval. The simulator
+  enforces it on every agent alike: a blocked action never runs, and one that
+  needs approval waits until a human (or, in experiments, a scripted approver
+  with a fixed delay) answers.
 - **Verify** requires recovery checks to hold for several consecutive ticks;
   traffic then returns in steps and is rolled back if errors come back.
 - **Escalate** produces a handoff report for an engineer when the agent cannot

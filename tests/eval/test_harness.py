@@ -12,7 +12,15 @@ import pytest
 
 from sentinelops.agent.base import NoOpAgent
 from sentinelops.eval import harness
-from sentinelops.eval.harness import AGENTS, make_agent, run_episode, simulate, summarize
+from sentinelops.eval.harness import (
+    AGENTS,
+    RunResult,
+    make_agent,
+    run_episode,
+    simulate,
+    summarize,
+)
+from sentinelops.policy import Preset, ScriptedApprover, build_policy
 from sentinelops.scenarios import Scenario, generate
 from sentinelops.sim.actions import Action, ActionKind
 from sentinelops.sim.env import FAILURE_CAUSES, DnsEnv
@@ -214,3 +222,51 @@ def test_generated_scenarios_run_end_to_end() -> None:
     result = run_episode(scenario, NoOpAgent(), TOPO)
     assert result.horizon == 1601
     assert 0.0 < result.legit_failure_share < 1.0
+
+
+# ------------------------------------------------------------------- policy
+
+
+def test_simulate_passes_the_policy_and_approver_to_the_environment() -> None:
+    policy = build_policy(Preset.CONSERVATIVE, topology=TOPO)
+    approver = ScriptedApprover(delay_ticks=60)
+    env = simulate(CRASH, restart_lon1_at(320), TOPO, policy=policy, approver=approver)
+    assert (env.policy, env.approver) == (policy, approver)
+    result = summarize(CRASH, "scripted", env)
+    assert (result.approvals_requested, result.actions_succeeded) == (1, 1)
+    assert (result.actions_blocked, result.actions_rejected) == (0, 0)
+
+
+def test_blocked_and_rejected_actions_are_counted() -> None:
+    blocked = run_episode_with(Preset.OBSERVE_ONLY, None)
+    assert (blocked.actions_issued, blocked.actions_blocked, blocked.approvals_requested) == (
+        1,
+        1,
+        0,
+    )
+    rejected = run_episode_with(
+        Preset.CONSERVATIVE, ScriptedApprover(reject=frozenset({ActionKind.RESTART}))
+    )
+    assert (rejected.actions_rejected, rejected.approvals_requested) == (1, 1)
+    assert rejected.actions_succeeded == 0
+
+
+def test_an_action_still_waiting_at_the_end_counts_as_requested() -> None:
+    waiting = run_episode_with(Preset.CONSERVATIVE, None)
+    assert (waiting.approvals_requested, waiting.actions_succeeded) == (1, 0)
+
+
+def test_an_approver_needs_a_policy() -> None:
+    with pytest.raises(ValueError, match="needs a policy"):
+        simulate(CRASH, NoOpAgent(), TOPO, approver=ScriptedApprover())
+
+
+def run_episode_with(preset: Preset, approver: ScriptedApprover | None) -> RunResult:
+    env = simulate(
+        CRASH,
+        restart_lon1_at(320),
+        TOPO,
+        policy=build_policy(preset, topology=TOPO),
+        approver=approver,
+    )
+    return summarize(CRASH, "scripted", env)

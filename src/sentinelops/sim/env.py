@@ -3,8 +3,9 @@
 :class:`DnsEnv` combines the topology, a list of injected faults and a seed into
 a reproducible run. Each tick it:
 
-1. finishes actions whose time is up and starts newly requested actions and
-   probes;
+1. finishes actions whose time is up, passes newly requested actions through
+   the operator policy (if there is one), starts the allowed ones and any
+   probes, and starts actions whose approval has come through;
 2. works out the combined effect of all active faults;
 3. draws the tick's demand, adds flood and surge traffic, and routes it to the
    announcing sites;
@@ -15,6 +16,27 @@ a reproducible run. Each tick it:
 
 The environment takes a list of faults rather than a scenario, so the
 simulator does not depend on how scenarios are generated.
+
+**Policy gate.** Given a :class:`~sentinelops.policy.rules.RuleSet`, the
+environment decides every requested action at the moment of its tick (the
+simulated calendar's weekday and hour):
+
+* ALLOW - the action starts at once, exactly as without a policy;
+* BLOCK - it is reported ``blocked`` and never runs;
+* REQUIRE_APPROVAL - a request is filed in :attr:`DnsEnv.approvals` and the
+  action is reported ``pending_approval``. A
+  :class:`~sentinelops.policy.approvals.ScriptedApprover` (experiments) or a
+  human calling ``env.approvals.approve`` between steps (console) answers it.
+  When approved, the action is reported ``approved`` and starts on that tick,
+  unless the policy now blocks it (a maintenance hold that began while it
+  waited); it goes before any action asked for on that same tick. A rejected
+  action is reported ``rejected``. Asking again for an
+  action that is still waiting re-reports the waiting one instead of filing a
+  second request.
+
+Enforcing the policy here, not inside each agent, means no agent can skip it,
+and every agent pays the same approval delay. Without a policy, runs are
+identical event by event to runs made before the gate existed.
 
 Randomness is split into independent streams (demand, telemetry noise, action
 durations, probe noise) derived from the seed. Demand and noise never depend on what the
@@ -29,6 +51,8 @@ from types import MappingProxyType
 
 import numpy as np
 
+from sentinelops.policy.approvals import ApprovalBook, ApprovalStatus, ScriptedApprover
+from sentinelops.policy.rules import Decision, RuleSet
 from sentinelops.sim.actions import (
     REPAIR_TICKS,
     RESTART_TICKS,
@@ -219,6 +243,15 @@ class DnsEnv:
         while not env.done:
             obs = env.step(agent.act(obs))
         share = env.truth.legit_failure_share()
+
+    Attributes:
+        policy: The operator policy actions go through, or ``None``.
+        approver: Answers approval requests automatically, or ``None``.
+        approvals: Every approval request of the run; a human operator
+            decides pending ones here between steps, passing :attr:`tick` (the
+            tick they saw) as the decision tick. The action starts on the next
+            step. :meth:`reset` starts a fresh book, so read this attribute
+            again after it rather than keeping the old one.
     """
 
     def __init__(
@@ -228,14 +261,31 @@ class DnsEnv:
         horizon: int,
         seed: int,
         config: EnvConfig | None = None,
+        *,
+        policy: RuleSet | None = None,
+        approver: ScriptedApprover | None = None,
     ) -> None:
         """Set up a run; call :meth:`reset` before stepping.
 
+        Args:
+            topology: The network.
+            faults: Faults to inject.
+            horizon: Ticks to simulate.
+            seed: Seed of every random stream.
+            config: Realism parameters.
+            policy: Operator policy every requested action goes through;
+                ``None`` lets every action start at once.
+            approver: Answers approval requests automatically; ``None`` leaves
+                them pending until someone decides them in :attr:`approvals`.
+
         Raises:
-            ValueError: If ``horizon`` < 1 or a fault does not fit the topology.
+            ValueError: If ``horizon`` < 1, a fault does not fit the topology,
+                or an approver is given without a policy.
         """
         if horizon < 1:
             raise ValueError("horizon must be at least 1 tick")
+        if approver is not None and policy is None:
+            raise ValueError("an approver needs a policy to answer for")
         for fault in faults:
             validate_fault(fault, topology)
         self.topology = topology
@@ -243,6 +293,8 @@ class DnsEnv:
         self.horizon = horizon
         self.seed = seed
         self.config = config or EnvConfig()
+        self.policy = policy
+        self.approver = approver
         self._sites = tuple(topology.sites)
         self._servers = tuple(topology.servers)
         self._rtt_ms = {
@@ -335,6 +387,9 @@ class DnsEnv:
         self._running: dict[int, _Running] = {}
         self._busy_servers: dict[ServerId, int] = {}
         self._next_action_id = 0
+        self.approvals = ApprovalBook()
+        # request id -> (action id, action, rule that required the approval)
+        self._awaiting: dict[int, tuple[int, Action, str]] = {}
         self._pending_probes: list[_PendingProbe] = []
         self._next_probe_id = 0
         self._active_faults: set[int] = set()
@@ -346,11 +401,15 @@ class DnsEnv:
         tick = self._tick
         updates: list[ActionUpdate] = []
         self._finish_actions(tick, updates)
+        # Approvals decided since the last tick go first: those actions were
+        # asked for earlier, so they win a server over ones asked for now.
+        self._answer_approvals(tick, updates)
         for request in requests:
             if isinstance(request, ProbeRequest):
                 self._start_probe(tick, request)
             else:
-                self._start_action(tick, request, updates)
+                self._submit_action(tick, request, updates)
+        self._answer_approvals(tick, updates)  # requests filed now, for a zero delay
         effects = compute_effects(self.faults, tick, self.topology, self.truth.cleared)
         self._log_fault_transitions(tick)
         capacity = {s: self._server_capacity(s, effects) for s in self._servers}
@@ -368,6 +427,7 @@ class DnsEnv:
         action_id: int,
         action: Action,
         status: ActionStatus,
+        **policy_info: str | int,
     ) -> None:
         update = ActionUpdate(action_id, action, status, tick)
         updates.append(update)
@@ -380,11 +440,75 @@ class DnsEnv:
             status=str(status),
             limit_qps=action.limit_qps,
             weight=action.weight,
+            **policy_info,  # only for gated actions, so runs without a policy are unchanged
         )
 
-    def _start_action(self, tick: int, action: Action, updates: list[ActionUpdate]) -> None:
+    def _new_action_id(self) -> int:
         action_id = self._next_action_id
         self._next_action_id += 1
+        return action_id
+
+    def _decide(self, tick: int, action: Action) -> tuple[Decision, str]:
+        """Ask the policy about ``action`` now; return the decision and the deciding rule."""
+        assert self.policy is not None
+        now = self.config.calendar.at(tick)
+        decision, rule = self.policy.explain(action, now.weekday, now.hour)
+        if rule is None:
+            return decision, "default"
+        return decision, rule.name or f"rule {self.policy.rules.index(rule)}"
+
+    def _submit_action(self, tick: int, action: Action, updates: list[ActionUpdate]) -> None:
+        if self.policy is None:
+            self._start_action(tick, action, updates, self._new_action_id())
+            return
+        decision, rule = self._decide(tick, action)
+        if decision == Decision.ALLOW:
+            self._start_action(tick, action, updates, self._new_action_id())
+        elif decision == Decision.BLOCK:
+            self._update(
+                updates, tick, self._new_action_id(), action, ActionStatus.BLOCKED, rule=rule
+            )
+        else:
+            request = self.approvals.request(action, tick, reason=rule)
+            waiting = self._awaiting.get(request.request_id)
+            action_id = self._new_action_id() if waiting is None else waiting[0]
+            self._awaiting[request.request_id] = (action_id, action, rule)
+            self._update(
+                updates,
+                tick,
+                action_id,
+                action,
+                ActionStatus.PENDING_APPROVAL,
+                rule=rule,
+                request_id=request.request_id,
+            )
+
+    def _answer_approvals(self, tick: int, updates: list[ActionUpdate]) -> None:
+        """Let the approver answer, then act on every request decided since last tick."""
+        if not self._awaiting:
+            return
+        if self.approver is not None:
+            self.approver.respond(self.approvals, tick)
+        for request_id, (action_id, action, asked_by) in list(self._awaiting.items()):
+            status = self.approvals.status(request_id)  # oldest first
+            if status == ApprovalStatus.PENDING:
+                continue
+            del self._awaiting[request_id]
+            answer: dict[str, str | int] = {"rule": asked_by, "request_id": request_id}
+            if status == ApprovalStatus.REJECTED:
+                self._update(updates, tick, action_id, action, ActionStatus.REJECTED, **answer)
+                continue
+            self.approvals.consume(action)  # single use, even if the action is now blocked
+            self._update(updates, tick, action_id, action, ActionStatus.APPROVED, **answer)
+            decision, rule = self._decide(tick, action)
+            if decision == Decision.BLOCK:
+                self._update(updates, tick, action_id, action, ActionStatus.BLOCKED, rule=rule)
+            else:
+                self._start_action(tick, action, updates, action_id)
+
+    def _start_action(
+        self, tick: int, action: Action, updates: list[ActionUpdate], action_id: int
+    ) -> None:
         servers = action_targets(action, self.topology)
         rerouting = {
             r.action.target

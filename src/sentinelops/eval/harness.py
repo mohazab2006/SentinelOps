@@ -12,6 +12,10 @@ The primary metric is the share of legitimate queries that failed (lost,
 rejected by a rate limit, overflowed a queue, timed out or found no announcing
 site), computed from the simulator's ground truth, which agents never see.
 
+An operator policy and a scripted approver can be passed to :func:`simulate`;
+the environment then enforces them on every agent alike (allowed actions
+start, blocked ones never run, the rest wait for approval).
+
 Agents are looked up by name in :data:`AGENTS` and imported only when used, so
 an agent that is not installed yet does not break the others.
 """
@@ -25,6 +29,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from sentinelops.agent.base import Agent
+from sentinelops.policy.approvals import ScriptedApprover
+from sentinelops.policy.rules import RuleSet
 from sentinelops.scenarios import Scenario
 from sentinelops.sim.actions import ActionStatus
 from sentinelops.sim.env import FAILURE_CAUSES, DnsEnv
@@ -58,6 +64,10 @@ class RunResult:
         actions_succeeded: Actions that completed successfully.
         actions_failed: Actions that failed (conflicts, or a restart that
             could not fix a hardware fault).
+        actions_blocked: Actions the policy blocked.
+        actions_rejected: Actions the approver rejected.
+        approvals_requested: Actions that had to wait for approval, however
+            the wait ended (approved, rejected, or still waiting at the end).
         event_digest: SHA-256 of the event log; equal digests mean the two
             runs were identical event by event.
     """
@@ -73,6 +83,9 @@ class RunResult:
     actions_issued: int
     actions_succeeded: int
     actions_failed: int
+    actions_blocked: int
+    actions_rejected: int
+    approvals_requested: int
     event_digest: str
 
 
@@ -112,16 +125,41 @@ def make_agent(name: str) -> Agent:
     return agent
 
 
-def simulate(scenario: Scenario, agent: Agent, topology: Topology) -> DnsEnv:
+def simulate(
+    scenario: Scenario,
+    agent: Agent,
+    topology: Topology,
+    *,
+    policy: RuleSet | None = None,
+    approver: ScriptedApprover | None = None,
+) -> DnsEnv:
     """Run ``agent`` on ``scenario`` from the first tick to the last.
 
     The simulator is seeded with the scenario's seed, so every agent faces the
     same demand, noise and faults for a given scenario.
 
+    Args:
+        scenario: The scenario to run.
+        agent: The agent to run it with.
+        topology: The network.
+        policy: Operator policy the environment enforces; ``None`` allows
+            every action.
+        approver: Answers approval requests; ``None`` leaves them pending.
+
     Returns:
         The finished environment, for its event log and ground truth.
+
+    Raises:
+        ValueError: If an approver is given without a policy.
     """
-    env = DnsEnv(topology, scenario.faults, scenario.horizon, seed=scenario.seed)
+    env = DnsEnv(
+        topology,
+        scenario.faults,
+        scenario.horizon,
+        seed=scenario.seed,
+        policy=policy,
+        approver=approver,
+    )
     agent.reset(topology)
     obs = env.reset()
     while not env.done:
@@ -147,8 +185,11 @@ def summarize(scenario: Scenario, agent_name: str, env: DnsEnv) -> RunResult:
         raise ValueError("env was not run from this scenario")
     truth = env.truth
     final_status: dict[object, str] = {}
+    waited: set[object] = set()
     for event in env.events.named("action"):
         final_status[event.data["action_id"]] = str(event.data["status"])
+        if event.data["status"] == ActionStatus.PENDING_APPROVAL:
+            waited.add(event.data["action_id"])
     statuses = list(final_status.values())
     return RunResult(
         family=scenario.family,
@@ -164,6 +205,9 @@ def summarize(scenario: Scenario, agent_name: str, env: DnsEnv) -> RunResult:
         actions_issued=len(statuses),
         actions_succeeded=statuses.count(ActionStatus.SUCCEEDED),
         actions_failed=statuses.count(ActionStatus.FAILED),
+        actions_blocked=statuses.count(ActionStatus.BLOCKED),
+        actions_rejected=statuses.count(ActionStatus.REJECTED),
+        approvals_requested=len(waited),
         event_digest=hashlib.sha256(env.events.to_jsonl().encode()).hexdigest(),
     )
 

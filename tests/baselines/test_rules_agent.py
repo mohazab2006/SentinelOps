@@ -11,6 +11,7 @@ from sentinelops.agent.base import Agent, NoOpAgent
 from sentinelops.baselines import RuleBasedAgent, RuleThresholds
 from sentinelops.baselines.rules_agent import fail_ratio
 from sentinelops.eval.harness import make_agent, simulate
+from sentinelops.policy import Preset, ScriptedApprover, build_policy
 from sentinelops.scenarios import generate
 from sentinelops.sim.actions import Action, ActionKind, ActionStatus, ActionUpdate
 from sentinelops.sim.env import DnsEnv
@@ -501,3 +502,41 @@ def test_fail_ratio_handles_missing_and_zero_counts() -> None:
     assert fail_ratio(site(None, None)) == 0.0
     assert fail_ratio(site(0.0, 0.0)) == 0.0
     assert fail_ratio(site(None, 50.0)) == 1.0
+
+
+# ------------------------------------------------------------------ under a policy
+
+
+def _gated_crash_run(preset: Preset, approver: ScriptedApprover | None) -> DnsEnv:
+    scenario = generate("crash", 3, TOPO)
+    policy = build_policy(preset, topology=TOPO)
+    return simulate(scenario, RuleBasedAgent(), TOPO, policy=policy, approver=approver)
+
+
+def _final_statuses(env: DnsEnv) -> list[str]:
+    final: dict[object, str] = {}
+    for event in env.events.named("action"):
+        final[event.data["action_id"]] = str(event.data["status"])
+    return list(final.values())
+
+
+def test_a_blocked_action_is_over_so_the_runbook_tries_again_later() -> None:
+    env = _gated_crash_run(Preset.OBSERVE_ONLY, None)
+    statuses = _final_statuses(env)
+    assert len(statuses) > 1  # it did not wait forever for the first blocked restart
+    assert set(statuses) == {ActionStatus.BLOCKED}
+    assert not env.truth.cleared
+
+
+def test_a_rejected_action_is_over_so_the_runbook_tries_again_later() -> None:
+    approver = ScriptedApprover(delay_ticks=30, reject=frozenset(ActionKind))
+    env = _gated_crash_run(Preset.CONSERVATIVE, approver)
+    statuses = _final_statuses(env)
+    assert statuses.count(ActionStatus.REJECTED) > 1
+    assert set(statuses) <= {ActionStatus.REJECTED, ActionStatus.PENDING_APPROVAL}  # last may wait
+
+
+def test_an_approved_restart_still_fixes_the_crash() -> None:
+    env = _gated_crash_run(Preset.CONSERVATIVE, ScriptedApprover(delay_ticks=120))
+    assert env.truth.cleared
+    assert ActionStatus.SUCCEEDED in _final_statuses(env)
